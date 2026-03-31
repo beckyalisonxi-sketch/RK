@@ -47,6 +47,16 @@ function extractYoutubeId(value?: string | null): string | null {
   return null
 }
 
+function getInitialVariantSelection(groups: VariantGroup[]): Record<string, string> {
+  const initial: Record<string, string> = {}
+  if (!Array.isArray(groups)) return initial
+  for (const g of groups) {
+    const first = (g?.options || []).find(Boolean)
+    if (g?.name && first) initial[g.name] = first
+  }
+  return initial
+}
+
 function replaceYoutubeLinks(input: string): string {
   if (!input) return ''
   if (input.includes('<iframe')) return input
@@ -66,6 +76,7 @@ function replaceYoutubeLinks(input: string): string {
    categoryName,
    brand,
    upc,
+  asin,
    publishedAt,
    description,
    amazonUrl,
@@ -80,6 +91,9 @@ function replaceYoutubeLinks(input: string): string {
    variantImageMap,
    variantOptionImages,
   variantOptionLinks,
+  variantOptionPrices,
+  variantOptionOriginalPrices,
+  variantOptionTitles,
   showBuyOnAmazon = true,
   showAddToCart = true,
   reviews = [],
@@ -90,6 +104,7 @@ function replaceYoutubeLinks(input: string): string {
   categoryName?: string
   brand?: string | null
   upc?: string | null
+  asin?: string | null
   publishedAt?: string | Date | null
   description: string
   amazonUrl: string
@@ -104,19 +119,24 @@ function replaceYoutubeLinks(input: string): string {
   variantImageMap?: Record<string, Record<string, number>> | null
   variantOptionImages?: Record<string, Record<string, string>> | null
   variantOptionLinks?: Record<string, Record<string, string>> | null
+  variantOptionPrices?: Record<string, Record<string, string | number>> | null
+  variantOptionOriginalPrices?: Record<string, Record<string, string | number>> | null
+  variantOptionTitles?: Record<string, Record<string, string>> | null
   showBuyOnAmazon?: boolean
   showAddToCart?: boolean
   reviews?: Array<{ id: string; name: string; country: string; title: string; content: string; rating: number; images: string[]; createdAt?: string | Date }>
 }): ReactElement {
-   const [selectedGalleryIndex, setSelectedGalleryIndex] = useState<number>(0)
-   const [selection, setSelection] = useState<Record<string, string>>({})
+  const [selectedGalleryIndex, setSelectedGalleryIndex] = useState<number>(0)
+  const [selection, setSelection] = useState<Record<string, string>>(() => getInitialVariantSelection(variantGroups))
   const [failedThumb, setFailedThumb] = useState<Record<string, boolean>>({})
-  const [lastClickedGroup, setLastClickedGroup] = useState<string | null>(null)
+  const [lastClickedGroup, setLastClickedGroup] = useState<string | null>(variantGroups?.[0]?.name || null)
   const [previewUrls, setPreviewUrls] = useState<string[] | null>(null)
   const [previewIndex, setPreviewIndex] = useState<number>(0)
   const [sortBy, setSortBy] = useState<'time' | 'rating'>('time')
   const [onlyWithImages, setOnlyWithImages] = useState<boolean>(false)
+  const [currentReviewPage, setCurrentReviewPage] = useState<number>(1)
   const touchStartXRef = useRef<number | null>(null)
+  const REVIEWS_PER_PAGE = 10
  
    const safeImages = useMemo(() => {
      const arr = Array.isArray(images) && images.length > 0 ? images : [mainImage]
@@ -163,6 +183,22 @@ function replaceYoutubeLinks(input: string): string {
     setSelectedGalleryIndex(toGalleryIndex(idx))
   }
 
+  useEffect(() => {
+    if (!Array.isArray(variantGroups) || variantGroups.length === 0) return
+    setSelection(prev => {
+      const hasInvalid = variantGroups.some(g => !prev[g.name] || !(g.options || []).includes(prev[g.name]))
+      if (!hasInvalid && Object.keys(prev).length > 0) return prev
+      return getInitialVariantSelection(variantGroups)
+    })
+    const firstGroup = variantGroups[0]
+    const firstOption = (firstGroup?.options || []).find(Boolean)
+    if (firstGroup?.name && firstOption) {
+      setLastClickedGroup(firstGroup.name)
+      const idx = resolveIndex(firstGroup.name, firstOption)
+      setSelectedGalleryIndex(toGalleryIndex(idx))
+    }
+  }, [variantGroups, variantImageMap, safeImages.length, hasGalleryVideo, normalizedYoutubeIndex])
+
   // 构造缩略图URL
   const getThumbUrl = (groupName: string, opt: string): string | null => {
     const url = variantOptionImages?.[groupName]?.[opt]
@@ -188,6 +224,26 @@ function replaceYoutubeLinks(input: string): string {
     }
     return arr
   }, [reviews, sortBy, onlyWithImages])
+
+  useEffect(() => {
+    setCurrentReviewPage(1)
+  }, [sortBy, onlyWithImages, reviews])
+
+  const totalReviewPages = useMemo(() => {
+    return Math.max(1, Math.ceil(sortedReviews.length / REVIEWS_PER_PAGE))
+  }, [sortedReviews.length, REVIEWS_PER_PAGE])
+
+  useEffect(() => {
+    if (currentReviewPage > totalReviewPages) {
+      setCurrentReviewPage(totalReviewPages)
+    }
+  }, [currentReviewPage, totalReviewPages])
+
+  const pagedReviews = useMemo(() => {
+    const start = (currentReviewPage - 1) * REVIEWS_PER_PAGE
+    const end = start + REVIEWS_PER_PAGE
+    return sortedReviews.slice(start, end)
+  }, [sortedReviews, currentReviewPage, REVIEWS_PER_PAGE])
 
   const formatReviewDate = (dt?: string | Date) => {
     if (!dt) return ''
@@ -240,6 +296,80 @@ function replaceYoutubeLinks(input: string): string {
     return amazonUrl
   })()
 
+  const toNumber = (v?: string | number | null): number | null => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null
+    if (typeof v !== 'string') return null
+    const n = Number(v)
+    if (!Number.isFinite(n)) return null
+    return n
+  }
+
+  const currentVariantPrice = (() => {
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboPrice = toNumber(variantOptionPrices?.[COMBO_KEY]?.[key])
+        if (comboPrice !== null) return comboPrice
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const p = toNumber(variantOptionPrices?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (p !== null) return p
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const p = toNumber(variantOptionPrices?.[g]?.[opt])
+      if (p !== null) return p
+    }
+    return null
+  })()
+  const currentVariantOriginalPrice = (() => {
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboOriginalPrice = toNumber(variantOptionOriginalPrices?.[COMBO_KEY]?.[key])
+        if (comboOriginalPrice !== null) return comboOriginalPrice
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const p = toNumber(variantOptionOriginalPrices?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (p !== null) return p
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const p = toNumber(variantOptionOriginalPrices?.[g]?.[opt])
+      if (p !== null) return p
+    }
+    return null
+  })()
+  const currentVariantTitle = (() => {
+    const normalizeTitle = (v?: string | null): string | null => {
+      if (!v || typeof v !== 'string') return null
+      const t = v.trim()
+      return t || null
+    }
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboTitle = normalizeTitle(variantOptionTitles?.[COMBO_KEY]?.[key])
+        if (comboTitle) return comboTitle
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const t = normalizeTitle(variantOptionTitles?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (t) return t
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const t = normalizeTitle(variantOptionTitles?.[g]?.[opt])
+      if (t) return t
+    }
+    return null
+  })()
+  const displayPrice = currentVariantPrice ?? price
+  const displayOriginalPrice = currentVariantOriginalPrice ?? (currentVariantPrice === null ? (originalPrice ?? null) : null)
+  const displayTitle = currentVariantTitle ?? title
+
   return (
     <>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
@@ -258,7 +388,7 @@ function replaceYoutubeLinks(input: string): string {
 
       {/* 右侧：详情 */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{displayTitle}</h1>
         {categoryName && (
           <p className="mt-2 text-gray-600">Category: {categoryName}</p>
         )}
@@ -267,6 +397,9 @@ function replaceYoutubeLinks(input: string): string {
         )}
         {upc && (
           <p className="mt-1 text-gray-600">UPC: {upc}</p>
+        )}
+        {asin && (
+          <p className="mt-1 text-gray-600">ASIN: {asin}</p>
         )}
         {publishedAt && (
           <p className="mt-1 text-gray-500 text-sm">Date First Available : {formatPublishedAt(publishedAt)}</p>
@@ -337,8 +470,8 @@ function replaceYoutubeLinks(input: string): string {
         <AddToCartButton
         id={id}
         slug={slug}
-        title={title}
-        price={price}
+        title={displayTitle}
+        price={displayPrice}
         imageUrl={primaryImageUrl}
         selectedOptions={selection}
         showQuantitySelector={true}
@@ -348,9 +481,9 @@ function replaceYoutubeLinks(input: string): string {
 
          {/* 价格模块放在选项之后 */}
          <div className="mt-4 flex items-center gap-3">
-           <span className="text-2xl font-semibold text-gray-900">{formatPrice(price)}</span>
-           {originalPrice ? (
-             <span className="text-gray-500 line-through">{formatPrice(originalPrice)}</span>
+           <span className="text-2xl font-semibold text-gray-900">{formatPrice(displayPrice)}</span>
+           {(typeof displayOriginalPrice === 'number' && displayOriginalPrice > displayPrice) ? (
+             <span className="text-gray-500 line-through">{formatPrice(displayOriginalPrice)}</span>
            ) : null}
         </div>
 
@@ -388,7 +521,7 @@ function replaceYoutubeLinks(input: string): string {
           </div>
         </div>
         <div className="mt-4 divide-y divide-gray-200">
-          {sortedReviews.map((r) => (
+          {pagedReviews.map((r) => (
             <div key={r.id} className="py-4">
               <div className="flex items-center gap-2">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -416,6 +549,32 @@ function replaceYoutubeLinks(input: string): string {
               )}
             </div>
           ))}
+        </div>
+        <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
+          <span>
+            {sortedReviews.length > 0
+              ? `Showing ${(currentReviewPage - 1) * REVIEWS_PER_PAGE + 1}-${Math.min(currentReviewPage * REVIEWS_PER_PAGE, sortedReviews.length)} of ${sortedReviews.length}`
+              : 'Showing 0 of 0'}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="px-3 py-1 rounded border disabled:opacity-50"
+              onClick={() => setCurrentReviewPage((p) => Math.max(1, p - 1))}
+              disabled={currentReviewPage <= 1}
+            >
+              Prev
+            </button>
+            <span>{currentReviewPage} / {totalReviewPages}</span>
+            <button
+              type="button"
+              className="px-3 py-1 rounded border disabled:opacity-50"
+              onClick={() => setCurrentReviewPage((p) => Math.min(totalReviewPages, p + 1))}
+              disabled={currentReviewPage >= totalReviewPages}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     )}

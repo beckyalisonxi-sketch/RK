@@ -46,6 +46,8 @@ model Product {
   id              String   @id @default(cuid())
   title           String   // 标题限制200字符
   slug            String   @unique
+  asin            String?  @unique
+  showAsinOnFrontend Boolean @default(false)
   mainImage       String
   images          String   // JSON string of image URLs
   youtubeUrl      String?
@@ -68,6 +70,9 @@ model Product {
   variantImageMap String?   // JSON: { [groupName]: { [option]: imageIndex } }
   variantOptionImages String? // JSON: { [groupName]: { [option]: imageUrl } }
   variantOptionLinks String? // JSON: { [groupName]: { [option]: url } }
+  variantOptionPrices String? // JSON: { [groupName]: { [option]: price } }, 组合使用 __combo__ key
+  variantOptionOriginalPrices String? // JSON: { [groupName]: { [option]: originalPrice } }, 组合使用 __combo__ key
+  variantOptionTitles String? // JSON: { [groupName]: { [option]: title } }, 组合使用 __combo__ key
   
   // 新增：按钮显示控制
   showBuyOnAmazon   Boolean  @default(true)

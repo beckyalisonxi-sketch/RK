@@ -3,14 +3,19 @@ import { ArrowRight, Shield, Star, Zap, Package } from 'lucide-react'
 import Layout from '@/components/Layout'
 import Carousel from '@/components/Carousel'
 import { db } from '@/lib/db'
+import { getProductUrlSegment } from '@/lib/utils'
 
 interface Product {
   id: string
   title: string
   slug: string
+  asin?: string | null
   mainImage: string
   price: number
   originalPrice?: number
+  variantOptionPrices?: string | null
+  variantOptionOriginalPrices?: string | null
+  variantOptionTitles?: string | null
   featured: boolean
   avgRating?: number
   reviewCount?: number
@@ -256,19 +261,82 @@ export default async function Home() {
 }
 
 function ProductCard({ product }: { product: Product }) {
+  const productPath = `/products/${getProductUrlSegment(product)}`
+  const resolveCardPrices = (p: Product): { price: number; originalPrice: number | null } => {
+    const basePrice = Number(p?.price ?? 0)
+    const baseOriginal = typeof p?.originalPrice === 'number' ? Number(p.originalPrice) : null
+    try {
+      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
+      const originalObj = p?.variantOptionOriginalPrices
+        ? JSON.parse(p.variantOptionOriginalPrices)
+        : (pricesObj?.__original_price_map__ ?? null)
+      const pickFirstNumber = (obj: any): number | null => {
+        if (!obj || typeof obj !== 'object') return null
+        const combo = obj.__combo__
+        if (combo && typeof combo === 'object') {
+          const comboValue = Object.values(combo).find((v) => Number.isFinite(Number(v)))
+          if (comboValue !== undefined) return Number(comboValue)
+        }
+        for (const [k, group] of Object.entries(obj)) {
+          if (k === '__combo__' || k === '__original_price_map__') continue
+          if (!group || typeof group !== 'object') continue
+          const v = Object.values(group).find((x) => Number.isFinite(Number(x)))
+          if (v !== undefined) return Number(v)
+        }
+        return null
+      }
+      const variantPrice = pickFirstNumber(pricesObj)
+      const variantOriginal = pickFirstNumber(originalObj)
+      return {
+        price: variantPrice ?? basePrice,
+        originalPrice: variantOriginal ?? (variantPrice === null ? baseOriginal : null),
+      }
+    } catch {
+      return { price: basePrice, originalPrice: baseOriginal }
+    }
+  }
+  const resolveCardTitle = (p: Product): string => {
+    const baseTitle = (p?.title || '').trim()
+    try {
+      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
+      const titleObj = p?.variantOptionTitles
+        ? JSON.parse(p.variantOptionTitles)
+        : (pricesObj?.__title_map__ ?? null)
+      const pickFirstTitle = (obj: any): string | null => {
+        if (!obj || typeof obj !== 'object') return null
+        const combo = obj.__combo__
+        if (combo && typeof combo === 'object') {
+          const comboValue = Object.values(combo).find((v) => typeof v === 'string' && v.trim())
+          if (typeof comboValue === 'string') return comboValue.trim()
+        }
+        for (const [k, group] of Object.entries(obj)) {
+          if (k === '__combo__' || k === '__title_map__') continue
+          if (!group || typeof group !== 'object') continue
+          const v = Object.values(group).find((x) => typeof x === 'string' && x.trim())
+          if (typeof v === 'string') return v.trim()
+        }
+        return null
+      }
+      return pickFirstTitle(titleObj) || baseTitle
+    } catch {
+      return baseTitle
+    }
+  }
+  const resolvedPrice = resolveCardPrices(product)
+  const resolvedTitle = resolveCardTitle(product)
   return (
-    <Link href={`/products/${product.slug}`} className="group">
+    <Link href={productPath} className="group">
       <div className="card-hover bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden transition-all duration-300 group-hover:shadow-xl group-hover:-translate-y-1">
         <div className="aspect-square overflow-hidden bg-gray-100">
           <img 
             src={product.mainImage} 
-            alt={product.title}
+            alt={resolvedTitle}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
         </div>
         <div className="p-6">
           <h3 className="text-xl font-semibold text-gray-900 mb-2 group-hover:text-blue-600 transition-colors">
-            {product.title}
+            {resolvedTitle}
           </h3>
           {(product.reviewCount ?? 0) > 0 && (
             <div className="mb-2 flex items-center gap-2 text-sm">
@@ -283,11 +351,11 @@ function ProductCard({ product }: { product: Product }) {
           )}
           <div className="flex items-center space-x-2">
             <span className="text-2xl font-bold text-gray-900">
-              ${product.price}
+              ${resolvedPrice.price}
             </span>
-            {product.originalPrice && product.originalPrice > product.price && (
+            {typeof resolvedPrice.originalPrice === 'number' && resolvedPrice.originalPrice > resolvedPrice.price && (
               <span className="text-lg text-gray-500 line-through">
-                ${product.originalPrice}
+                ${resolvedPrice.originalPrice}
               </span>
             )}
           </div>

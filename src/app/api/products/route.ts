@@ -1,6 +1,94 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { isSameOrigin, requireAdminSession } from '@/lib/auth'
+import { normalizeAsin } from '@/lib/utils'
+
+const ORIGINAL_PRICE_FALLBACK_KEY = '__original_price_map__'
+const TITLE_FALLBACK_KEY = '__title_map__'
+
+function parseJsonObj(input: string | null | undefined): any {
+  try {
+    return input ? JSON.parse(input) : null
+  } catch {
+    return null
+  }
+}
+
+function splitVariantPriceMaps(
+  variantOptionPricesRaw: string | null | undefined,
+  variantOptionOriginalPricesRaw: string | null | undefined
+): { variantOptionPrices: any; variantOptionOriginalPrices: any } {
+  const pricesObj = parseJsonObj(variantOptionPricesRaw)
+  const originalObj = parseJsonObj(variantOptionOriginalPricesRaw)
+  if (originalObj && typeof originalObj === 'object') {
+    if (pricesObj && typeof pricesObj === 'object' && pricesObj[ORIGINAL_PRICE_FALLBACK_KEY]) {
+      delete pricesObj[ORIGINAL_PRICE_FALLBACK_KEY]
+    }
+    return {
+      variantOptionPrices: pricesObj && typeof pricesObj === 'object' ? pricesObj : null,
+      variantOptionOriginalPrices: originalObj,
+    }
+  }
+  const fallbackOriginal = pricesObj?.[ORIGINAL_PRICE_FALLBACK_KEY]
+  if (pricesObj && typeof pricesObj === 'object' && pricesObj[ORIGINAL_PRICE_FALLBACK_KEY]) {
+    delete pricesObj[ORIGINAL_PRICE_FALLBACK_KEY]
+  }
+  return {
+    variantOptionPrices: pricesObj && typeof pricesObj === 'object' ? pricesObj : null,
+    variantOptionOriginalPrices: fallbackOriginal && typeof fallbackOriginal === 'object' ? fallbackOriginal : null,
+  }
+}
+
+function splitVariantTitleMaps(
+  variantOptionPricesRaw: string | null | undefined,
+  variantOptionTitlesRaw: string | null | undefined
+): { variantOptionPrices: any; variantOptionTitles: any } {
+  const pricesObj = parseJsonObj(variantOptionPricesRaw)
+  const titleObj = parseJsonObj(variantOptionTitlesRaw)
+  if (titleObj && typeof titleObj === 'object') {
+    if (pricesObj && typeof pricesObj === 'object' && pricesObj[TITLE_FALLBACK_KEY]) {
+      delete pricesObj[TITLE_FALLBACK_KEY]
+    }
+    return {
+      variantOptionPrices: pricesObj && typeof pricesObj === 'object' ? pricesObj : null,
+      variantOptionTitles: titleObj,
+    }
+  }
+  const fallbackTitle = pricesObj?.[TITLE_FALLBACK_KEY]
+  if (pricesObj && typeof pricesObj === 'object' && pricesObj[TITLE_FALLBACK_KEY]) {
+    delete pricesObj[TITLE_FALLBACK_KEY]
+  }
+  return {
+    variantOptionPrices: pricesObj && typeof pricesObj === 'object' ? pricesObj : null,
+    variantOptionTitles: fallbackTitle && typeof fallbackTitle === 'object' ? fallbackTitle : null,
+  }
+}
+
+function mergeVariantPricesWithOriginal(
+  variantOptionPricesRaw: string | null | undefined,
+  variantOptionOriginalPricesRaw: string | null | undefined
+): string | undefined {
+  const pricesObj = parseJsonObj(variantOptionPricesRaw) || {}
+  const originalObj = parseJsonObj(variantOptionOriginalPricesRaw)
+  if (!originalObj || typeof originalObj !== 'object') {
+    return variantOptionPricesRaw ?? undefined
+  }
+  pricesObj[ORIGINAL_PRICE_FALLBACK_KEY] = originalObj
+  return JSON.stringify(pricesObj)
+}
+
+function mergeVariantPricesWithTitle(
+  variantOptionPricesRaw: string | null | undefined,
+  variantOptionTitlesRaw: string | null | undefined
+): string | undefined {
+  const pricesObj = parseJsonObj(variantOptionPricesRaw) || {}
+  const titleObj = parseJsonObj(variantOptionTitlesRaw)
+  if (!titleObj || typeof titleObj !== 'object') {
+    return variantOptionPricesRaw ?? undefined
+  }
+  pricesObj[TITLE_FALLBACK_KEY] = titleObj
+  return JSON.stringify(pricesObj)
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -73,7 +161,11 @@ export async function GET(request: NextRequest) {
     }
 
     // 映射数据库字段到前端期望的字段
-    const normalized = products.map((p: any) => ({
+    const normalized = products.map((p: any) => {
+      let priceMaps = splitVariantPriceMaps(p.variantOptionPrices, p.variantOptionOriginalPrices)
+      const titleMaps = splitVariantTitleMaps(p.variantOptionPrices, p.variantOptionTitles)
+      priceMaps = { ...priceMaps, variantOptionPrices: titleMaps.variantOptionPrices }
+      return ({
       ...p,
       name: p.title,
       inStock: p.active,
@@ -83,9 +175,12 @@ export async function GET(request: NextRequest) {
       variantImageMap: (() => { try { return p.variantImageMap ? JSON.parse(p.variantImageMap) : null } catch { return null } })(),
       variantOptionImages: (() => { try { return p.variantOptionImages ? JSON.parse(p.variantOptionImages) : null } catch { return null } })(),
       variantOptionLinks: (() => { try { return p.variantOptionLinks ? JSON.parse(p.variantOptionLinks) : null } catch { return null } })(),
+      variantOptionPrices: priceMaps.variantOptionPrices,
+      variantOptionOriginalPrices: priceMaps.variantOptionOriginalPrices,
+      variantOptionTitles: titleMaps.variantOptionTitles,
       avgRating: (aggMap[p.id]?.avgRating ?? 0),
       reviewCount: (aggMap[p.id]?.reviewCount ?? 0),
-    }))
+    })})
 
     const res = NextResponse.json(normalized)
     if (!includeInactive) {
@@ -130,8 +225,13 @@ export async function POST(request: NextRequest) {
       variantImageMap,
       variantOptionImages,
       variantOptionLinks,
+      variantOptionPrices,
+      variantOptionOriginalPrices,
+      variantOptionTitles,
       youtubeUrl,
       youtubeIndex,
+      asin,
+      showAsinOnFrontend,
       // 新增字段：前台按钮显示控制
       showBuyOnAmazon,
       showAddToCart,
@@ -152,8 +252,8 @@ export async function POST(request: NextRequest) {
         return null
       } catch { return null }
     }
-    const asin = typeof amazonUrl === 'string' ? extractAsin(amazonUrl) : null
-    const normalizedAmazonUrl = asin ? `https://www.amazon.com/dp/${asin}` : amazonUrl
+    const amazonAsin = typeof amazonUrl === 'string' ? extractAsin(amazonUrl) : null
+    const normalizedAmazonUrl = amazonAsin ? `https://www.amazon.com/dp/${amazonAsin}` : amazonUrl
 
     // Validate required fields
     if (!name || !description || !price || !amazonUrl) {
@@ -189,11 +289,30 @@ export async function POST(request: NextRequest) {
       return Math.max(0, Math.min(raw, imageList.length))
     })()
 
-    // 生成唯一 slug
+    const normalizedAsin = normalizeAsin(asin)
+
+    if (normalizedAsin) {
+      const asinConflict = await db.product.findUnique({ where: { asin: normalizedAsin } })
+      if (asinConflict) {
+        return NextResponse.json(
+          { error: 'ASIN 已存在，请填写唯一值' },
+          { status: 400 }
+        )
+      }
+      const asinConflictBySlug = await db.product.findUnique({ where: { slug: normalizedAsin } })
+      if (asinConflictBySlug) {
+        return NextResponse.json(
+          { error: 'ASIN 与现有产品链接冲突，请更换 ASIN' },
+          { status: 400 }
+        )
+      }
+    }
+
+    // 生成唯一 slug（同时避免与 ASIN 冲突）
     const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     let slug = baseSlug
     let suffix = 1
-    while (await db.product.findUnique({ where: { slug } })) {
+    while (await db.product.findFirst({ where: { OR: [{ slug }, { asin: slug.toUpperCase() }] } })) {
       slug = `${baseSlug}-${suffix++}`
     }
 
@@ -260,9 +379,53 @@ export async function POST(request: NextRequest) {
       } catch { return null }
     })()
 
+    const variantOptionPricesJson: string | null = (() => {
+      try {
+        if (!variantOptionPrices) return null
+        if (typeof variantOptionPrices === 'string') {
+          const obj = JSON.parse(variantOptionPrices)
+          return obj && typeof obj === 'object' ? JSON.stringify(obj) : null
+        }
+        if (typeof variantOptionPrices === 'object') {
+          return JSON.stringify(variantOptionPrices)
+        }
+        return null
+      } catch { return null }
+    })()
+
+    const variantOptionOriginalPricesJson: string | null = (() => {
+      try {
+        if (!variantOptionOriginalPrices) return null
+        if (typeof variantOptionOriginalPrices === 'string') {
+          const obj = JSON.parse(variantOptionOriginalPrices)
+          return obj && typeof obj === 'object' ? JSON.stringify(obj) : null
+        }
+        if (typeof variantOptionOriginalPrices === 'object') {
+          return JSON.stringify(variantOptionOriginalPrices)
+        }
+        return null
+      } catch { return null }
+    })()
+
+    const variantOptionTitlesJson: string | null = (() => {
+      try {
+        if (!variantOptionTitles) return null
+        if (typeof variantOptionTitles === 'string') {
+          const obj = JSON.parse(variantOptionTitles)
+          return obj && typeof obj === 'object' ? JSON.stringify(obj) : null
+        }
+        if (typeof variantOptionTitles === 'object') {
+          return JSON.stringify(variantOptionTitles)
+        }
+        return null
+      } catch { return null }
+    })()
+
     const createData: any = {
       title: name,
       slug,
+      asin: normalizedAsin,
+      showAsinOnFrontend: showAsinOnFrontend === true,
       mainImage: imageList[0],
       // 将长描述或简短描述存入 description 字段
       description: longDescription || description || '',
@@ -285,14 +448,41 @@ export async function POST(request: NextRequest) {
       variantImageMap: variantImageMapJson,
       variantOptionImages: variantOptionImagesJson,
       variantOptionLinks: variantOptionLinksJson,
+      variantOptionPrices: variantOptionPricesJson,
+      variantOptionOriginalPrices: variantOptionOriginalPricesJson,
+      variantOptionTitles: variantOptionTitlesJson,
       // 新增：按钮显示控制
       showBuyOnAmazon: showBuyOnAmazon !== false,
       showAddToCart: showAddToCart !== false,
     }
 
-    const product = await db.product.create({
-      data: createData,
-    })
+    const isVariantOriginalPriceFieldError = (e: any) =>
+      e?.code === 'P2022' ||
+      e?.code === 'P2009' ||
+      e?.code === 'P2010' ||
+      String(e?.message || '').includes('variantOptionOriginalPrices') ||
+      String(e?.message || '').includes('variantOptionTitles')
+
+    let product: any
+    try {
+      product = await db.product.create({
+        data: createData,
+      })
+    } catch (innerError: any) {
+      if (!isVariantOriginalPriceFieldError(innerError)) throw innerError
+      const fallbackData = { ...createData }
+      let mergedPrice = mergeVariantPricesWithOriginal(
+        variantOptionPricesJson,
+        variantOptionOriginalPricesJson
+      )
+      mergedPrice = mergeVariantPricesWithTitle(mergedPrice, variantOptionTitlesJson)
+      fallbackData.variantOptionPrices = mergedPrice
+      delete fallbackData.variantOptionOriginalPrices
+      delete fallbackData.variantOptionTitles
+      product = await db.product.create({
+        data: fallbackData,
+      })
+    }
 
     const parseArr = (s: string | null | undefined) => {
       try { return s ? JSON.parse(s) : [] } catch { return [] }
@@ -301,7 +491,16 @@ export async function POST(request: NextRequest) {
       try { return s ? JSON.parse(s) : null } catch { return null }
     }
     // 返回映射后的字段
-    const normalized = { 
+    let priceMaps = splitVariantPriceMaps(
+      (product as any).variantOptionPrices,
+      (product as any).variantOptionOriginalPrices
+    )
+    const titleMaps = splitVariantTitleMaps(
+      (product as any).variantOptionPrices,
+      (product as any).variantOptionTitles
+    )
+    priceMaps = { ...priceMaps, variantOptionPrices: titleMaps.variantOptionPrices }
+    const normalized = {
       ...(product as any), 
       name: (product as any).title, 
       inStock: (product as any).active,
@@ -311,6 +510,9 @@ export async function POST(request: NextRequest) {
       variantImageMap: parseObj((product as any).variantImageMap),
       variantOptionImages: parseObj((product as any).variantOptionImages),
       variantOptionLinks: parseObj((product as any).variantOptionLinks),
+      variantOptionPrices: priceMaps.variantOptionPrices,
+      variantOptionOriginalPrices: priceMaps.variantOptionOriginalPrices,
+      variantOptionTitles: titleMaps.variantOptionTitles,
     }
     return NextResponse.json(normalized, { status: 201 })
   } catch (error: any) {
