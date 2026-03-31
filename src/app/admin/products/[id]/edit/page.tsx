@@ -931,7 +931,8 @@ export default function EditProduct() {
   const hasVariantPricing = (() => {
     const map = form.variantOptionPrices || {}
     const originalMap = form.variantOptionOriginalPrices || {}
-    return [...Object.values(map), ...Object.values(originalMap)].some(group => group && Object.keys(group).length > 0)
+    return [...Object.values(map), ...Object.values(originalMap)]
+      .some(group => Object.values(group || {}).some(v => String(v ?? '').trim() !== ''))
   })()
   const comboLinkMap = (form.variantOptionLinks?.[COMBO_KEY] || {}) as Record<string, string>
   const comboPriceMap = (form.variantOptionPrices?.[COMBO_KEY] || {}) as Record<string, string>
@@ -942,6 +943,8 @@ export default function EditProduct() {
   const hasOptionVariantPricing = [...Object.entries(form.variantOptionPrices || {}), ...Object.entries(form.variantOptionOriginalPrices || {})]
     .filter(([k]) => k !== COMBO_KEY)
     .some(([, group]) => Object.values(group || {}).some(v => String(v ?? '').trim() !== ''))
+  const disableOptionPricingInputs = hasComboVariantPricing
+  const disableComboPricingInputs = false
 
   const reviewImportableCount = reviewImportPreview.filter((r) => r.willImport).length
   const reviewSkippedCount = reviewImportPreview.length - reviewImportableCount
@@ -1437,7 +1440,7 @@ export default function EditProduct() {
                                 type="number"
                                 step="0.01"
                                 value={(form.variantOptionPrices?.[group.name]?.[opt] ?? '')}
-                                disabled={hasComboVariantPricing}
+                                disabled={disableOptionPricingInputs}
                                 onChange={(e) => {
                                   const v = e.target.value
                                   setForm(prev => {
@@ -1467,7 +1470,7 @@ export default function EditProduct() {
                                 type="number"
                                 step="0.01"
                                 value={(form.variantOptionOriginalPrices?.[group.name]?.[opt] ?? '')}
-                                disabled={hasComboVariantPricing}
+                                disabled={disableOptionPricingInputs}
                                 onChange={(e) => {
                                   const v = e.target.value
                                   setForm(prev => {
@@ -1570,7 +1573,7 @@ export default function EditProduct() {
                 <h2 className="text-lg font-semibold text-gray-900">组合链接（可选）</h2>
                 <button
                   type="button"
-                  disabled={hasOptionVariantPricing}
+                  disabled={false}
                   onClick={() => {
                     const key = getFirstMissingComboKey(form.variants, form.variantOptionLinks?.[COMBO_KEY])
                     if (!key) return
@@ -1601,7 +1604,7 @@ export default function EditProduct() {
                 </button>
               </div>
               <p className="text-xs text-gray-500 mb-2">当所有维度均选择且存在匹配的组合链接时，将优先跳转该链接；否则回退到选项链接或主链接。</p>
-              {hasOptionVariantPricing && <p className="text-xs text-amber-600 mb-2">已填写选项价格/原价，组合价格输入已禁用。</p>}
+              {hasOptionVariantPricing && !hasComboVariantPricing && <p className="text-xs text-amber-600 mb-2">当前使用选项价格模式；当组合价格填写后将自动切换并禁用选项价格。</p>}
               {hasComboVariantPricing && <p className="text-xs text-amber-600 mb-2">已填写组合价格/原价，选项价格输入已禁用。</p>}
 
               {comboKeys.length === 0 ? (
@@ -1686,7 +1689,7 @@ export default function EditProduct() {
                               type="number"
                               step="0.01"
                               value={price}
-                              disabled={hasOptionVariantPricing}
+                              disabled={disableComboPricingInputs}
                               onChange={(e) => {
                                 const v = e.target.value
                                 setForm(prev => {
@@ -1705,7 +1708,7 @@ export default function EditProduct() {
                               type="number"
                               step="0.01"
                               value={originalPrice}
-                              disabled={hasOptionVariantPricing}
+                              disabled={disableComboPricingInputs}
                               onChange={(e) => {
                                 const v = e.target.value
                                 setForm(prev => {
